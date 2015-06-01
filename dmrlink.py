@@ -31,9 +31,11 @@ from binascii import b2a_hex as h
 from hashlib import sha1
 from socket import inet_ntoa as IPAddr
 from socket import inet_aton as IPHexStr
+from socket import gethostbyname 
 from twisted.internet.protocol import DatagramProtocol
 from twisted.internet import reactor
 from twisted.internet import task
+from random import randint
 
 __author__ = 'Cortney T. Buffington, N0MJS'
 __copyright__ = 'Copyright (c) 2013 - 2015 Cortney T. Buffington, N0MJS and the K0USY Group'
@@ -119,7 +121,7 @@ try:
                 
                 # Things we need to know to connect and be a peer in this IPSC
                 'RADIO_ID':     hex(int(config.get(section, 'RADIO_ID')))[2:].rjust(8,'0').decode('hex'),
-                'IP':           config.get(section, 'IP'),
+                'IP':           gethostbyname(config.get(section, 'IP')),
                 'PORT':         config.getint(section, 'PORT'),
                 'ALIVE_TIMER':  config.getint(section, 'ALIVE_TIMER'),
                 'MAX_MISSED':   config.getint(section, 'MAX_MISSED'),
@@ -147,7 +149,7 @@ try:
                 })
             if not NETWORK[section]['LOCAL']['MASTER_PEER']:
                 NETWORK[section]['MASTER'].update({
-                    'IP': config.get(section, 'MASTER_IP'),
+                    'IP': gethostbyname(config.get(section, 'MASTER_IP')),
                     'PORT': config.getint(section, 'MASTER_PORT')
                 })
             
@@ -1097,6 +1099,11 @@ class IPSC(DatagramProtocol):
     # Callbacks are iterated in the order of "more likely" to "less likely" to reduce processing time
     #
     def datagramReceived(self, data, (host, port)):
+
+        # Loop timing test, uncomment the next two lines. Use for testing only.
+        #_pkt_id = randint(0,10000)
+        #_pkt_time = time.time()
+
         _packettype = data[0:1]
         _peerid     = data[1:5]
         _ipsc_seq   = data[5:6]
@@ -1145,6 +1152,11 @@ class IPSC(DatagramProtocol):
                 if _packettype == GROUP_VOICE:
                     self.reset_keep_alive(_peerid)
                     self.group_voice(self._network, _src_sub, _dst_sub, _ts, _end, _peerid, data)
+                    
+                    # Loop timing test, uncomment the next two lines. Use for testing only.
+                    #_pkt_proc_time = (time.time() - _pkt_time) * 1000
+                    #logger.info('TIMING: Group voice packet ID %s took %s ms', _pkt_id, _pkt_proc_time)
+                    
                     return
             
                 elif _packettype == PVT_VOICE:
