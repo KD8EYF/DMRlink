@@ -39,7 +39,7 @@ from random import randint
 
 __author__ = 'Cortney T. Buffington, N0MJS'
 __copyright__ = 'Copyright (c) 2013 - 2015 Cortney T. Buffington, N0MJS and the K0USY Group'
-__credits__ = 'Adam Fast, KC0YLK, Dave K, and he who wishes not to be named'
+__credits__ = 'Adam Fast, KC0YLK, KD8EYF, and he who wishes not to be named'
 __license__ = 'Creative Commons Attribution-ShareAlike 3.0 Unported'
 __version__ = '0.27b'
 __maintainer__ = 'Cort Buffington, N0MJS'
@@ -80,9 +80,18 @@ try:
                 'REPORT_PEERS': config.getboolean(section, 'REPORT_PEERS'),
                 'REPORT_INTERVAL': config.getint(section, 'REPORT_INTERVAL'),
                 'PEER_REPORT_INC_MODE': config.getboolean(section, 'PEER_REPORT_INC_MODE'),
-                'PEER_REPORT_INC_FLAGS': config.getboolean(section, 'PEER_REPORT_INC_FLAGS')
+                'PEER_REPORT_INC_FLAGS': config.getboolean(section, 'PEER_REPORT_INC_FLAGS'),
+                'SQL_ENABLED': config.getboolean(section, 'REPORT_SQL'),
+                'JSON_ENABLED':  config.getboolean(section, 'REPORT_JSON'),
+                'JSON_FILENAME': config.get(section, 'REPORT_JSON_FILENAME')
             }
-
+        elif section == 'SQL':
+	   SQL = {
+		'HOSTNAME': config.get(section, 'SQL_HOSTNAME'),
+ 		'DATABASE': config.get(section, 'SQL_DATABASE'),
+		'USER': config.get(section, 'SQL_USER'),
+		'PASSWORD':  config.get(section, 'SQL_PASSWORD')
+	   }
         elif section == 'LOGGER':
             # Process LOGGER items in the configuration
             LOGGER = {
@@ -258,6 +267,35 @@ dictConfig({
 })
 logger = logging.getLogger(LOGGER['LOG_NAME'])
 
+#***********************************************
+#     EXTENDED REPORTING 
+#***********************************************
+
+# Import the SQL modules and setup the SQL connection
+# exit if failure
+#
+
+if REPORTS['SQL_ENABLED']:
+    import mysql.connector
+    params = {
+        'user': SQL['USER'], 
+        'password': SQL['PASSWORD'],
+        'host': SQL['HOSTNAME'],
+        'database': SQL['DATABASE']
+    }
+    try:
+        cnx = mysql.connector.connect(**params)
+        cursor = cnx.cursor()
+    except mysql.connector.Error as err:
+        print ("UNABLE TO CONNET TO SQL")
+        print (err)
+        sys.exit()
+
+# Import json only if needed
+#
+
+if REPORTS['JSON_ENABLED']:
+    import json
 
 #************************************************
 #     IMPORTING OTHER FILES - '#include'
@@ -588,6 +626,88 @@ def write_ipsc_stats():
     file = open('stats.py', 'w')
     pickle.dump(NETWORK, file)
     file.close()
+
+# Update MySQL Database with all peer status information
+# Not logging call information at this time
+#
+def update_sql_netstatus():
+    try:
+        # Iterate through all connectied networks
+        # report master first, then loop through peers
+        #
+        for _network in NETWORK:
+            if NETWORK[_network]['MASTER']['STATUS']['CONNECTED']:
+                sql_data_value = [_network, 
+                                  int_id(NETWORK[_network]['MASTER']['RADIO_ID']), 
+                                  NETWORK[_network]['MASTER']['IP'], 
+                                  NETWORK[_network]['MASTER']['PORT']]
+                for name, value in NETWORK[_network]['MASTER']['MODE_DECODE'].items():
+                    sql_data_value.append(value) 
+                for name, value in NETWORK[_network]['MASTER']['FLAGS_DECODE'].items():
+                    sql_data_value.append(value)
+                for name, value in NETWORK[_network]['MASTER']['STATUS'].items():
+                    sql_data_value.append(value)
+                sql_master_query = "REPLACE INTO dmr.peer_status VALUES (%s)" % (('%s, '*len(sql_data_value))[:-2])
+                cursor.execute(sql_master_query, sql_data_value)
+                cnx.commit()
+                
+                # Loop The the peer list
+                #
+                for peer in NETWORK[_network]['PEERS'].keys():
+                    if not NETWORK[_network]['LOCAL']['RADIO_ID'] == peer:
+                        sql_data_value = [_network, 
+                                          int_id(peer),
+                                          NETWORK[_network]['PEERS'][peer]['IP'],
+                                          NETWORK[_network]['PEERS'][peer]['PORT']]
+                        # Sometimes the peers do not have MODE or FLAGS set.
+                        # Since the SQL quiery can change, we extract the key names and
+                        # dynamically build the query. Knarly and needs cleanup
+                        # 
+                        sql_data_names = ['NETWORK','RADIO_ID','IP','PORT']
+                        if NETWORK[_network]['PEERS'][peer]['MODE_DECODE']:
+                            for name, value in NETWORK[_network]['PEERS'][peer]['MODE_DECODE'].items():
+                                sql_data_value.append(value)
+                                sql_data_names.append(name)
+                        if NETWORK[_network]['PEERS'][peer]['FLAGS_DECODE']:
+                            for name, value in NETWORK[_network]['PEERS'][peer]['FLAGS_DECODE'].items():
+                                sql_data_value.append(value)
+                                sql_data_names.append(name)
+                        if  NETWORK[_network]['PEERS'][peer]['STATUS']:
+                            for name, value in NETWORK[_network]['PEERS'][peer]['STATUS'].items():
+                                sql_data_value.append(value)
+                                sql_data_names.append(name)
+                        s = ('%s, '*len(sql_data_names))
+                        sql_peer_query = "INSERT INTO dmr.peer_status (%s) VALUES (%s)" % ((', '.join(sql_data_names)), ('%s, '*len(sql_data_names))[:-2])
+                        sql_peer_query += " ON DUPLICATE KEY UPDATE "
+                        dup = ""
+                        for val in sql_data_names: 
+                            if not val == "RADIO_ID":
+                                dup = dup + val+"=%s, "
+                        sql_peer_query += dup[:-2] 
+                        sql_data_value2 = list(sql_data_value) 
+                        del sql_data_value2[1]
+                        sql_data_value = sql_data_value + sql_data_value2
+                        cursor.execute(sql_peer_query, sql_data_value)
+                        cnx.commit()
+                    else:
+                        #DO NOT REPORT OURSELF
+                        pass
+            else:
+                #IPSC NETWORK IS NOT CONNECTED
+                pass
+    except:
+        logger.error("ERROR IN SQL FUNCTION")
+
+# Save the network stats as JSON
+# like pickle dump above but better 
+# for web compatability
+#
+def update_json_netstatus():
+    try:
+        with open(REPORTS['JSON_FILENAME'], 'w') as f:
+              json.dump(NETWORK, f, ensure_ascii=False)
+    except:
+        logger.error('UNABLE TO SERIALIZE NETWORK DATA TO JSON')
 
 # Shut ourselves down gracefully with the IPSC peers.
 #
@@ -975,6 +1095,10 @@ class IPSC(DatagramProtocol):
         if REPORTS['REPORT_PEERS']:
             print_master(self._network)
             print_peer_list(self._network)
+        if REPORTS['SQL_ENABLED']:
+            update_sql_netstatus()
+        if REPORTS['JSON_ENABLED']:
+            update_json_netstatus()
     
     # Timed loop used for IPSC connection Maintenance when we are the MASTER
     #    
